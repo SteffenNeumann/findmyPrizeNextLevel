@@ -1,0 +1,12 @@
+{
+	"folders": [
+		{
+			"path": "../FindmyPrize_Flask"
+		},
+		{
+			"name": "findmyPrizeNextLevel",
+			"path": "."
+		}
+	],
+	"settings": {}
+}
