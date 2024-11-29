@@ -15,6 +15,27 @@ from flask import make_response
 from flask import json
 from . import scheduler
 from .models import User
+# At the top of views.py, add:
+# At the top of views.py, update the import to:
+from .api_searcher import search_products
+
+# Get the values from the current user and form data
+city = current_user.city
+country = current_user.country
+product = request.form.get('product')
+price = request.form.get('price').replace(',', '.')
+email_notification = request.form.get('emailNotification') == 'on'
+# Then in your code, use it directly:
+results = search_products(
+    city=city,
+    country=country,
+    product=product,
+    target_price=float(price),
+    should_send_email=email_notification,
+    user_id=current_user.id
+)
+
+
 
 views = Blueprint('views', __name__)
 # Global schedule time settings
@@ -40,16 +61,11 @@ def geocode_with_retry(location_string, max_attempts=5, initial_delay=1):
 @views.route('/', methods=['GET', 'POST'])
 @login_required
 def home():
-    # Initialize variables
     city = current_user.city
     country = current_user.country
-    
-    # Load saved searches for the user
     saved_searches = SavedSearch.query.filter_by(user_id=current_user.id).order_by(SavedSearch.date_created.desc()).first()
-    
-    # Modify this line to include all necessary fields for the deals cards
     saved_deals = ScraperResult.query.filter_by(user_id=current_user.id).order_by(ScraperResult.id.desc()).all()
-    
+
     if request.method == 'POST':
         product = request.form.get('product')
         price = request.form.get('price').replace(',', '.')
@@ -57,7 +73,7 @@ def home():
         email_notification = request.form.get('emailNotification') == 'on'
 
         if city and country and product and price:
-            print(f"Received POST request with product: {product}, price: {price}, city: {city}, country: {country}")
+            # Save search if requested
             if save_search:
                 saved_search = SavedSearch(
                     user_id=current_user.id,
@@ -69,9 +85,18 @@ def home():
                 )
                 db.session.add(saved_search)
                 db.session.commit()
-            
-            results = run_scraper(city, country, product, float(price), email_notification)
-            # Results are now properly structured dictionaries
+
+            # Use the new API search instead of scraper
+            from .api_searcher import search_products
+            results = search_products(
+                city=city,
+                country=country,
+                product=product,
+                target_price=float(price),
+                should_send_email=email_notification,
+                user_id=current_user.id
+            )
+
             if results:
                 for result in results:
                     scraper_result = ScraperResult(
@@ -87,19 +112,20 @@ def home():
                     )
                     db.session.add(scraper_result)
                 db.session.commit()
-            
+
             return render_template('home.html',
-                user=current_user,
-                results=results,
-                saved_searches=saved_searches,
-                deals=saved_deals,
-                is_previous_deal=True)  # Add this flag to differentiate styling
+                                user=current_user,
+                                results=results,
+                                saved_searches=saved_searches,
+                                deals=saved_deals,
+                                is_previous_deal=True)
 
     return render_template('home.html',
-        user=current_user,
-        deals=saved_deals,
-        saved_search=saved_searches,
-        is_previous_deal=True)  # Add this flag to differentiate styling
+                         user=current_user,
+                         deals=saved_deals,
+                         saved_search=saved_searches,
+                         is_previous_deal=True)
+
 @views.route('/delete-note', methods=['POST'])
 def delete_note():  
      note = json.loads(request.data) # this function expects a JSON from the INDEX.js file 
@@ -267,10 +293,13 @@ def scheduled_job(schedule_id, app):
         current_time = datetime.datetime.now()
         schedule_time = datetime.time(SCHEDULE_HOUR, SCHEDULE_MINUTE)
         next_run = datetime.datetime.combine(current_time.date(), schedule_time)
+        
         if current_time > next_run:
             next_run = next_run + datetime.timedelta(days=1)
         schedule.next_run = next_run
-        results = run_scraper(
+
+        from .api_searcher import search_products
+        results = search_products(
             city=schedule.city,
             country=schedule.country,
             product=schedule.product,
@@ -278,26 +307,25 @@ def scheduled_job(schedule_id, app):
             should_send_email=True,
             user_id=schedule.user_id
         )
-        
+
         schedule.last_run = current_time
-        
-        # Only create ScraperResult if results contain valid data
-        if results and isinstance(results, list) and len(results) > 0:
+
+        if results:
             for result in results:
-                if result.get('store') and result.get('price'):  # Verify required fields exist
-                    scraper_result = ScraperResult(
-                        data=json.dumps(result),
-                        user_id=schedule.user_id,
-                        product=schedule.product,
-                        target_price=schedule.target_price,
-                        city=schedule.city,
-                        country=schedule.country,
-                        email_notification=True,
-                        store=result.get('store'),  # Explicitly set store
-                        price=float(result.get('price', 0))  # Explicitly set price
-                    )
-                    db.session.add(scraper_result)
-        db.session.commit()
+                scraper_result = ScraperResult(
+                    data=json.dumps(result),
+                    user_id=schedule.user_id,
+                    product=schedule.product,
+                    target_price=schedule.target_price,
+                    city=schedule.city,
+                    country=schedule.country,
+                    email_notification=True,
+                    store=result.get('store'),
+                    price=float(result.get('price', 0))
+                )
+                db.session.add(scraper_result)
+            db.session.commit()
+
 @views.route('/create-schedule', methods=['POST'])
 @login_required
 def create_schedule():
